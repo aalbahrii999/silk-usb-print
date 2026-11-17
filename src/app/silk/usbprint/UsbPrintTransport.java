@@ -1,5 +1,6 @@
 package app.silk.usbprint;
 
+import android.hardware.usb.UsbConfiguration;
 import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
@@ -63,6 +64,9 @@ final class UsbPrintTransport {
         String error = "";
         boolean transferCompleted;
         String interfaces = "";
+        String inquiry = "";
+        String switchNote = "";
+        boolean needsPermission;
 
         void mark(String name) {
             stage = name;
@@ -98,6 +102,8 @@ final class UsbPrintTransport {
             o.append("اكتمل النقل: ").append(transferCompleted ? "نعم" : "لا").append('\n');
             o.append("اكتمال النقل لا يعني خروج الورقة.\n");
             if (error.length() > 0) o.append("الخطأ: ").append(error).append('\n');
+            if (inquiry.length() > 0) o.append("هوية التخزين: ").append(inquiry).append('\n');
+            if (switchNote.length() > 0) o.append("تبديل الوضع: ").append(switchNote).append('\n');
             o.append("\nالواجهات:\n").append(interfaces);
             return o.toString();
         }
@@ -147,7 +153,25 @@ final class UsbPrintTransport {
     static Choice choose(UsbDevice device) {
         List<Choice> outs = printerOuts(device);
         if (!outs.isEmpty()) return outs.get(0);
-        return null;
+        return vendorBulk(device);
+    }
+
+    static int suggestMode(UsbDevice device) {
+        if (preferThermal(device)) return PrintComposer.MODE_THERMAL_80;
+        if (preferSystemDialog(device)) return PrintComposer.MODE_SYSTEM;
+        return PrintComposer.MODE_PCL;
+    }
+
+    static byte[] directTestJob(UsbDevice device) throws IOException {
+        if (device != null && device.getVendorId() == 0x0A5F) return PrintComposer.zplTextTest();
+        if (preferThermal(device)) return PrintComposer.escPosTextTest();
+        return PrintComposer.pcl5eAsciiTest();
+    }
+
+    static boolean preferSystemDialog(UsbDevice device) {
+        if (device == null || preferThermal(device)) return false;
+        int vid = device.getVendorId();
+        return vid == 0x04B8 || vid == 0x04A9;
     }
 
     static Report probe(UsbManager manager, UsbDevice device) {
@@ -160,6 +184,18 @@ final class UsbPrintTransport {
             return report;
         }
         report.mark("USB_PERMISSION_GRANTED");
+        try {
+            device = activatePrinter(manager, device, report);
+        } catch (IOException e) {
+            return report;
+        }
+        fillIdentity(report, manager, device);
+        report.interfaces = describeInterfaces(device);
+        if (!report.permission) {
+            report.needsPermission = true;
+            report.error = "تغيّر تعريف الطابعة بعد إيقاف وضع القرص. اضغط «اتصال» ثم أعد التشخيص.";
+            return report;
+        }
         Choice choice = choose(device);
         if (choice == null) {
             report.error = "لا توجد واجهة طابعة USB class 7 مع Bulk OUT. إرسال PCL إلى واجهة أخرى لا يطبع.";
@@ -201,9 +237,16 @@ final class UsbPrintTransport {
             if (!report.permission) throw fail(report, "امنح إذن USB من زر الاتصال.");
             report.mark("USB_PERMISSION_GRANTED");
             if (data == null || data.length == 0) throw fail(report, "بيانات الطباعة فارغة. لم يُرسل شيء.");
+            device = activatePrinter(manager, device, report);
+            fillIdentity(report, manager, device);
+            report.interfaces = describeInterfaces(device);
+            if (!report.permission) {
+                report.needsPermission = true;
+                throw fail(report, "تغيّر تعريف الطابعة بعد إيقاف وضع القرص. اضغط «اتصال» ثم أعد المحاولة.");
+            }
             Choice choice = choose(device);
             if (choice == null) {
-                throw fail(report, "لا توجد واجهة طابعة (class 7) فيها Bulk OUT. لن يُرسل PCL إلى واجهة أخرى.");
+                throw fail(report, "لا توجد واجهة طابعة (class 7) فيها Bulk OUT. لن يُرسل شيء إلى واجهة تخزين.");
             }
             rememberChoice(report, choice);
             report.mark("USB_BULK_OUT_FOUND");
@@ -219,15 +262,19 @@ final class UsbPrintTransport {
                 claimed = true;
                 report.claimed = true;
                 report.mark("USB_INTERFACE_CLAIMED");
-                readPrinterClass(conn, choice.iface, report);
-                if (report.portStatus.contains("الورق فارغ")) {
-                    throw fail(report, "الطابعة تبلغ أن الورق فارغ. ضع ورقًا ثم أعد المحاولة.");
-                }
-                softReset(conn, choice.iface, report);
-                try {
-                    Thread.sleep(250);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                if (choice.iface.getInterfaceClass() == UsbConstants.USB_CLASS_PRINTER) {
+                    readPrinterClass(conn, choice.iface, report);
+                    if (report.portStatus.contains("الورق فارغ")) {
+                        throw fail(report, "الطابعة تبلغ أن الورق فارغ. ضع ورقًا ثم أعد المحاولة.");
+                    }
+                    softReset(conn, choice.iface, report);
+                    try {
+                        Thread.sleep(250);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                } else {
+                    report.mark("USB_VENDOR_CLASS_BULK");
                 }
                 report.mark("USB_TRANSFER_STARTED");
                 int mps = Math.max(1, choice.out.getMaxPacketSize());
@@ -332,16 +379,328 @@ final class UsbPrintTransport {
         return null;
     }
 
+    private static UsbDevice activatePrinter(UsbManager manager, UsbDevice device, Report report) throws IOException {
+        if (device == null) return null;
+        boolean storage = massStorage(device) != null;
+        Choice printer = null;
+        List<Choice> outs = printerOuts(device);
+        if (!outs.isEmpty()) printer = outs.get(0);
+        if (printer != null && !storage) {
+            report.mark("USB_PRINTER_INTERFACE_READY");
+            return device;
+        }
+        UsbDevice switched = tryPrinterConfiguration(manager, device, report);
+        if (switched != null && !printerOuts(switched).isEmpty()) {
+            fillIdentity(report, manager, switched);
+            report.mark("USB_CONFIGURATION_SWITCHED");
+            return switched;
+        }
+        if (isHpMassStorage(device)) {
+            String note = disableHpSmartInstall(manager, device, report);
+            report.switchNote = note;
+            if ("real-disk".equals(note)) {
+                throw stop(report, "هذا الجهاز قرص تخزين حقيقي (" + report.inquiry + ") وليس طابعة. لن يُرسل إليه شيء.");
+            }
+            UsbDevice again = waitForPrinter(manager, 0x03F0, 5000);
+            if (again != null && !printerOuts(again).isEmpty()) {
+                fillIdentity(report, manager, again);
+                report.interfaces = describeInterfaces(again);
+                report.mark("USB_REENUMERATED");
+                return again;
+            }
+            throw stop(report, "الطابعة ظاهرة كقرص تعريفات (USB class 8) لا كطابعة. أُرسل أمر إيقاف HP Smart Install"
+                    + (note == null || note.length() == 0 ? "" : " (" + note + ")")
+                    + ". افصل كهرباء الطابعة عشر ثوانٍ، ثم صِل الكابل من جديد، ثم اضغط «تشخيص USB». لا تُعد الطباعة قبل أن تظهر واجهة class=7.");
+        }
+        if (printer != null) return device;
+        Choice vendor = vendorBulk(device);
+        if (vendor != null) {
+            report.mark("USB_VENDOR_INTERFACE_READY");
+            return device;
+        }
+        return device;
+    }
+
+    private static UsbDevice tryPrinterConfiguration(UsbManager manager, UsbDevice device, Report report) {
+        UsbDeviceConnection conn = manager.openDevice(device);
+        if (conn == null) return null;
+        int target = -1;
+        try {
+            target = findPrinterConfigValue(device, conn);
+            if (target <= 0) return null;
+            int r = conn.controlTransfer(0x00, 0x09, target, 0, null, 0, 2000);
+            report.mark(r >= 0 ? "USB_SET_CONFIGURATION" : "USB_SET_CONFIGURATION_FAILED");
+            if (r < 0) return null;
+        } finally {
+            try {
+                conn.close();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return waitForPrinter(manager, device.getVendorId(), 3000);
+    }
+
+    private static int findPrinterConfigValue(UsbDevice device, UsbDeviceConnection conn) {
+        int count = device.getConfigurationCount();
+        for (int i = 0; i < count; i++) {
+            UsbConfiguration cfg = device.getConfiguration(i);
+            for (int j = 0; j < cfg.getInterfaceCount(); j++) {
+                if (cfg.getInterface(j).getInterfaceClass() == UsbConstants.USB_CLASS_PRINTER) {
+                    return cfg.getId();
+                }
+            }
+        }
+        byte[] raw = conn.getRawDescriptors();
+        if (raw == null || raw.length < 18) return -1;
+        int i = 18;
+        int found = -1;
+        while (i + 1 < raw.length) {
+            int len = raw[i] & 0xFF;
+            int type = raw[i + 1] & 0xFF;
+            if (len < 2) break;
+            if (type == 0x02 && i + 8 < raw.length) {
+                int total = (raw[i + 2] & 0xFF) | ((raw[i + 3] & 0xFF) << 8);
+                int value = raw[i + 5] & 0xFF;
+                int end = Math.min(raw.length, i + Math.max(len, total));
+                for (int p = i; p + 5 < end; ) {
+                    int l = raw[p] & 0xFF;
+                    int t = raw[p + 1] & 0xFF;
+                    if (l < 2) break;
+                    if (t == 0x04 && (raw[p + 5] & 0xFF) == UsbConstants.USB_CLASS_PRINTER) found = value;
+                    p += l;
+                }
+                i = end;
+                continue;
+            }
+            i += len;
+        }
+        return found;
+    }
+
+    private static UsbDevice waitForPrinter(UsbManager manager, int vendorId, int ms) {
+        long end = System.currentTimeMillis() + ms;
+        do {
+            for (UsbDevice candidate : manager.getDeviceList().values()) {
+                if (vendorId != 0 && candidate.getVendorId() != vendorId) continue;
+                if (!printerOuts(candidate).isEmpty()) return candidate;
+            }
+            try {
+                Thread.sleep(400);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        } while (System.currentTimeMillis() < end);
+        return null;
+    }
+
+    private static String disableHpSmartInstall(UsbManager manager, UsbDevice device, Report report) {
+        UsbInterface iface = massStorage(device);
+        if (iface == null) return "no-msc";
+        UsbEndpoint out = bulkOut(iface);
+        UsbEndpoint in = bulkIn(iface);
+        if (out == null || in == null) return "no-ep";
+        UsbDeviceConnection conn = manager.openDevice(device);
+        if (conn == null) return "open-failed";
+        boolean claimed = false;
+        try {
+            if (!conn.claimInterface(iface, true)) return "claim-failed";
+            claimed = true;
+            report.mark("USB_STORAGE_CLAIMED");
+            byte[] put = smartInstallPut();
+            int n = conn.bulkTransfer(out, put, put.length, 4000);
+            String note = "put=" + n;
+            report.mark(n == put.length ? "HP_SMART_INSTALL_SENT" : "HP_SMART_INSTALL_SEND_FAILED");
+            byte[] resp = new byte[512];
+            int rn = conn.bulkTransfer(in, resp, resp.length, 2500);
+            if (rn > 0) note += " resp=" + asciiSafe(resp, rn);
+            else {
+                clearHalt(conn, in.getAddress());
+                clearHalt(conn, out.getAddress());
+            }
+            report.inquiry = scsiInquiry(conn, out, in);
+            if (isRealDisk(report.inquiry)) {
+                report.mark("USB_REAL_DISK");
+                return "real-disk";
+            }
+            ejectCd(conn, out, in);
+            report.mark("USB_STORAGE_EJECT_TRIED");
+            return note;
+        } finally {
+            release(conn, iface, claimed);
+        }
+    }
+
+    private static boolean isRealDisk(String inquiry) {
+        return inquiry != null && inquiry.startsWith("type=0");
+    }
+
+    private static boolean isHpMassStorage(UsbDevice device) {
+        return device != null && device.getVendorId() == 0x03F0 && massStorage(device) != null;
+    }
+
+    private static UsbInterface massStorage(UsbDevice device) {
+        if (device == null) return null;
+        for (int i = 0; i < device.getInterfaceCount(); i++) {
+            UsbInterface iface = device.getInterface(i);
+            if (iface.getInterfaceClass() == UsbConstants.USB_CLASS_MASS_STORAGE) return iface;
+        }
+        return null;
+    }
+
+    private static String scsiInquiry(UsbDeviceConnection conn, UsbEndpoint out, UsbEndpoint in) {
+        byte[] cbw = new byte[31];
+        cbw[0] = 0x55;
+        cbw[1] = 0x53;
+        cbw[2] = 0x42;
+        cbw[3] = 0x43;
+        cbw[4] = 1;
+        cbw[8] = 36;
+        cbw[12] = (byte) 0x80;
+        cbw[14] = 6;
+        cbw[15] = 0x12;
+        cbw[19] = 36;
+        int sent = conn.bulkTransfer(out, cbw, cbw.length, 2000);
+        if (sent != cbw.length) {
+            clearHalt(conn, out.getAddress());
+            clearHalt(conn, in.getAddress());
+            return "";
+        }
+        byte[] data = new byte[36];
+        int n = conn.bulkTransfer(in, data, data.length, 2000);
+        byte[] csw = new byte[13];
+        conn.bulkTransfer(in, csw, csw.length, 1000);
+        if (n < 32) {
+            clearHalt(conn, in.getAddress());
+            clearHalt(conn, out.getAddress());
+            return "";
+        }
+        int type = data[0] & 0x1F;
+        return "type=" + type + " " + slice(data, 8, 8) + " " + slice(data, 16, 16);
+    }
+
+    private static void ejectCd(UsbDeviceConnection conn, UsbEndpoint out, UsbEndpoint in) {
+        byte[] cbw = new byte[31];
+        cbw[0] = 0x55;
+        cbw[1] = 0x53;
+        cbw[2] = 0x42;
+        cbw[3] = 0x43;
+        cbw[4] = 2;
+        cbw[14] = 6;
+        cbw[15] = 0x1B;
+        cbw[19] = 0x02;
+        int sent = conn.bulkTransfer(out, cbw, cbw.length, 2000);
+        if (sent != cbw.length) {
+            clearHalt(conn, out.getAddress());
+            clearHalt(conn, in.getAddress());
+            return;
+        }
+        byte[] csw = new byte[13];
+        int n = conn.bulkTransfer(in, csw, csw.length, 2000);
+        if (n < 0) {
+            clearHalt(conn, in.getAddress());
+            clearHalt(conn, out.getAddress());
+        }
+    }
+
+    private static byte[] smartInstallPut() {
+        String body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n"
+                + "<featurestatus xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:noNamespaceSchemaLocation=\"featurestatus.xsd\">\r\n"
+                + "  <smartInstall>disabled</smartInstall>\r\n"
+                + "</featurestatus>\r\n\r\n";
+        byte[] bodyBytes = body.getBytes(StandardCharsets.US_ASCII);
+        String head = "PUT /dev/featurestatus.xml HTTP/1.1\r\n"
+                + "CONTENT-LENGTH: " + bodyBytes.length + "\r\n"
+                + "USER-AGENT:hp Proxy/3.0\r\n"
+                + "HOST:localhost:3910\r\n\r\n";
+        byte[] headBytes = head.getBytes(StandardCharsets.US_ASCII);
+        byte[] all = new byte[headBytes.length + bodyBytes.length];
+        System.arraycopy(headBytes, 0, all, 0, headBytes.length);
+        System.arraycopy(bodyBytes, 0, all, headBytes.length, bodyBytes.length);
+        return all;
+    }
+
+    private static void clearHalt(UsbDeviceConnection conn, int endpoint) {
+        try {
+            conn.controlTransfer(0x02, 0x01, 0, endpoint, null, 0, 1000);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    private static String slice(byte[] data, int offset, int len) {
+        String s = new String(data, offset, len, StandardCharsets.US_ASCII).trim();
+        StringBuilder o = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= 32 && c < 127) o.append(c);
+        }
+        return o.toString();
+    }
+
+    private static String asciiSafe(byte[] data, int len) {
+        String s = slice(data, 0, Math.min(len, data.length));
+        if (s.length() > 180) return s.substring(0, 180);
+        return s;
+    }
+
+    private static boolean preferThermal(UsbDevice device) {
+        if (device == null) return false;
+        String name = "";
+        try {
+            String product = device.getProductName();
+            if (product != null) name = product.toUpperCase(Locale.US);
+        } catch (RuntimeException ignored) {
+        }
+        if (name.contains("TM-") || name.contains("POS") || name.contains("RECEIPT") || name.contains("THERMAL")) {
+            return true;
+        }
+        int vid = device.getVendorId();
+        return vid == 0x0519 || vid == 0x154F || vid == 0x0416 || vid == 0x1A86 || vid == 0x0483 || vid == 0x1203;
+    }
+
+    private static Choice vendorBulk(UsbDevice device) {
+        if (device == null || VENDORS.get(device.getVendorId()) == null) return null;
+        for (int i = 0; i < device.getInterfaceCount(); i++) {
+            UsbInterface iface = device.getInterface(i);
+            int cls = iface.getInterfaceClass();
+            if (cls != UsbConstants.USB_CLASS_VENDOR_SPEC && cls != 0) continue;
+            UsbEndpoint out = bulkOut(iface);
+            if (out != null) return new Choice(iface, out);
+        }
+        return null;
+    }
+
+    private static UsbEndpoint bulkIn(UsbInterface iface) {
+        if (iface == null) return null;
+        for (int e = 0; e < iface.getEndpointCount(); e++) {
+            UsbEndpoint ep = iface.getEndpoint(e);
+            if (ep.getType() == UsbConstants.USB_ENDPOINT_XFER_BULK
+                    && ep.getDirection() == UsbConstants.USB_DIR_IN) {
+                return ep;
+            }
+        }
+        return null;
+    }
+
+    private static IOException stop(Report report, String message) {
+        report.error = message;
+        report.mark("USB_NEEDS_POWER_CYCLE");
+        Log.e(TAG, message);
+        return new IOException(message + "\nآخر مرحلة: " + report.stage);
+    }
+
     static String describeInterfaces(UsbDevice device) {
         if (device == null) return "لا يوجد جهاز.";
         StringBuilder o = new StringBuilder();
         o.append("deviceClass=").append(device.getDeviceClass())
-                .append(" interfaces=").append(device.getInterfaceCount()).append('\n');
+                .append(" interfaces=").append(device.getInterfaceCount())
+                .append(" configs=").append(device.getConfigurationCount()).append('\n');
         for (int i = 0; i < device.getInterfaceCount(); i++) {
             UsbInterface iface = device.getInterface(i);
             o.append("IF ").append(iface.getId())
                     .append(" alt=").append(iface.getAlternateSetting())
                     .append(" class=").append(iface.getInterfaceClass())
+                    .append(classLabel(iface.getInterfaceClass()))
                     .append(" sub=").append(iface.getInterfaceSubclass())
                     .append(" proto=").append(iface.getInterfaceProtocol())
                     .append('\n');
@@ -355,6 +714,13 @@ final class UsbPrintTransport {
             }
         }
         return o.toString();
+    }
+
+    private static String classLabel(int cls) {
+        if (cls == UsbConstants.USB_CLASS_PRINTER) return " طابعة";
+        if (cls == UsbConstants.USB_CLASS_MASS_STORAGE) return " تخزين";
+        if (cls == UsbConstants.USB_CLASS_VENDOR_SPEC) return " خاصة";
+        return "";
     }
 
     private static void readPrinterClass(UsbDeviceConnection conn, UsbInterface iface, Report report) {

@@ -110,11 +110,11 @@ public class MainActivity extends Activity {
 
         ArrayAdapter<String> langs = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
                 new String[]{
-                        "PDF مباشر — ليس لـ P2035",
-                        "PCL 5e — HP LaserJet ومنها P2035",
+                        "PDF مباشر — طابعات المكتب الحديثة",
+                        "PCL 5e — ليزر HP وBrother",
                         "حرارية ٨٠ ملم",
                         "حرارية ٥٨ ملم",
-                        "نافذة أندرويد"
+                        "نافذة أندرويد — إبسون وكانون"
                 });
         langs.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         langSpinner.setAdapter(langs);
@@ -645,6 +645,10 @@ public class MainActivity extends Activity {
         if (printing) return;
         final UsbDevice device = currentDevice();
         if (!readyUsb(device)) return;
+        if (UsbPrintTransport.preferSystemDialog(device)) {
+            log("هذه الطابعة (إبسون أو كانون) لا تقبل PCL الخام غالباً. اختر «نافذة أندرويد».");
+            return;
+        }
         beginSend();
         new Thread(new Runnable() {
             @Override
@@ -652,14 +656,14 @@ public class MainActivity extends Activity {
                 UsbPrintTransport.Report report = new UsbPrintTransport.Report();
                 try {
                     report.mark("USB_DEVICE_FOUND");
-                    final byte[] job = PrintComposer.pcl5eAsciiTest();
+                    final byte[] job = UsbPrintTransport.directTestJob(device);
                     report.mark("PRINT_JOB_CREATED");
                     report.mark("PCL_DATA_READY");
                     report.jobBytes = job.length;
                     ui(new Runnable() {
                         @Override
                         public void run() {
-                            log("PCL_DATA_READY " + job.length + " بايت — نص ASCII فقط");
+                            log("مهمة الاختبار جاهزة: " + job.length + " بايت");
                         }
                     });
                     sendUsb(device, job, report);
@@ -736,6 +740,10 @@ public class MainActivity extends Activity {
                 endSend();
                 log("فشل عند " + report.stage);
                 log(msg);
+                if (report.needsPermission) {
+                    refreshDevices();
+                    requestUsb();
+                }
             }
         });
     }
@@ -747,12 +755,28 @@ public class MainActivity extends Activity {
                 final UsbPrintTransport.Report report = UsbPrintTransport.probe(usbManager, device);
                 DiagStore.last = report;
                 DiagStore.text = report.text();
-                if (!UsbPrintTransport.wantsPcl(report.deviceId, label(device))) return;
+                final int suggested = UsbPrintTransport.suggestMode(device);
                 ui(new Runnable() {
                     @Override
                     public void run() {
-                        langSpinner.setSelection(PrintComposer.MODE_PCL);
-                        log("الطابعة تفهم PCL 5e ولا تقبل PDF. اضغط «اختبار الطباعة المباشرة».");
+                        if (suggested == PrintComposer.MODE_THERMAL_80) {
+                            langSpinner.setSelection(PrintComposer.MODE_THERMAL_80);
+                            log("وُجدت طابعة إيصالات. اختيرت حرارية ٨٠ ملم.");
+                            return;
+                        }
+                        if (suggested == PrintComposer.MODE_SYSTEM) {
+                            langSpinner.setSelection(PrintComposer.MODE_SYSTEM);
+                            log("إبسون وكانون المنزلية تعمل من نافذة أندرويد.");
+                            return;
+                        }
+                        if (report.error != null && report.error.contains("class 8")) {
+                            log(report.error);
+                            return;
+                        }
+                        if (UsbPrintTransport.wantsPcl(report.deviceId, label(device))) {
+                            langSpinner.setSelection(PrintComposer.MODE_PCL);
+                            log("الطابعة تفهم PCL 5e. اضغط «اختبار الطباعة المباشرة».");
+                        }
                     }
                 });
             }

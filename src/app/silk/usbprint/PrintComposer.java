@@ -126,6 +126,25 @@ final class PrintComposer {
         return o.toByteArray();
     }
 
+    static byte[] escPosTextTest() throws IOException {
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.write(0x1B);
+        o.write(0x40);
+        o.write(0x1B);
+        o.write(0x61);
+        o.write(0x01);
+        ascii(o, "SILK USB TEST\n\n\n");
+        o.write(0x1D);
+        o.write(0x56);
+        o.write(0x42);
+        o.write(0x00);
+        return o.toByteArray();
+    }
+
+    static byte[] zplTextTest() {
+        return "^XA^FO40,40^A0N,36,36^FDSILK USB TEST^FS^XZ".getBytes(StandardCharsets.US_ASCII);
+    }
+
     private static byte[] wrapPjlPdf(byte[] pdf, int copies) throws IOException {
         ByteArrayOutputStream o = new ByteArrayOutputStream(pdf.length + 256);
         writeUel(o);
