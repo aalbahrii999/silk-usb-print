@@ -105,12 +105,33 @@ final class PrintComposer {
         return new int[]{2480, 3508, 26};
     }
 
+    static byte[] pcl5eAsciiTest() throws IOException {
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        writeUel(o);
+        ascii(o, "@PJL JOB NAME = \"SILK\"\r\n");
+        ascii(o, "@PJL ENTER LANGUAGE = PCL\r\n");
+        esc(o, "E");
+        esc(o, "&l0O");
+        esc(o, "&l6D");
+        esc(o, "&a0L");
+        esc(o, "(10U");
+        esc(o, "(s0p12h0s0b4099T");
+        ascii(o, "SILK USB TEST\r\n");
+        ascii(o, "HP LASERJET P2035\r\n");
+        o.write(0x0C);
+        esc(o, "E");
+        writeUel(o);
+        ascii(o, "@PJL EOJ NAME = \"SILK\"\r\n");
+        writeUel(o);
+        return o.toByteArray();
+    }
+
     private static byte[] wrapPjlPdf(byte[] pdf, int copies) throws IOException {
         ByteArrayOutputStream o = new ByteArrayOutputStream(pdf.length + 256);
         writeUel(o);
         ascii(o, "@PJL JOB NAME=\"silk\"\r\n");
         ascii(o, "@PJL SET COPIES=" + copies + "\r\n");
-        ascii(o, "@PJL ENTER LANGUAGE=PDF\r\n");
+        ascii(o, "@PJL ENTER LANGUAGE = PDF\r\n");
         o.write(pdf);
         if (pdf.length == 0 || pdf[pdf.length - 1] != '\n') o.write('\n');
         writeUel(o);
@@ -128,14 +149,14 @@ final class PrintComposer {
             writeUel(o);
             ascii(o, "@PJL JOB NAME=\"silk\"\r\n");
             ascii(o, "@PJL SET COPIES=" + req.copies + "\r\n");
-            ascii(o, "@PJL ENTER LANGUAGE=PCL\r\n");
+            ascii(o, "@PJL ENTER LANGUAGE = PCL\r\n");
             esc(o, "E");
             for (int i = 0; i < pages.size(); i++) {
                 writePclPage(o, pages.get(i), geom[2], dpi, req.sharp);
             }
             esc(o, "E");
             writeUel(o);
-            ascii(o, "@PJL EOJ NAME=\"silk\"\r\n");
+            ascii(o, "@PJL EOJ NAME = \"silk\"\r\n");
             writeUel(o);
             return o.toByteArray();
         } finally {
@@ -155,14 +176,15 @@ final class PrintComposer {
         esc(o, "&a0L");
         esc(o, "*t" + dpi + "R");
         esc(o, "*r0F");
-        esc(o, "*p0X");
-        esc(o, "*p0Y");
+        esc(o, "*r" + w + "S");
+        esc(o, "*r" + h + "T");
+        esc(o, "*b0M");
         esc(o, "*r1A");
         for (int y = 0; y < h; y++) {
             esc(o, "*b" + rowBytes + "W");
             o.write(raster, y * rowBytes, rowBytes);
         }
-        esc(o, "*rB");
+        esc(o, "*rC");
         o.write(0x0C);
     }
 

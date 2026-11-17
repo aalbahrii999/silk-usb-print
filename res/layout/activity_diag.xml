@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/cream"
+    android:layoutDirection="rtl"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="تشخيص USB"
+        android:textColor="@color/teal"
+        android:textSize="28sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="هذه الشاشة تقرأ الواجهة وحالة المنفذ. لا ترسل مهمة طباعة."
+        android:textColor="@color/muted"
+        android:textSize="14sp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="12dp"
+        android:layout_weight="1"
+        android:background="@drawable/bg_card"
+        android:padding="12dp">
+
+        <TextView
+            android:id="@+id/reportText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/ink"
+            android:textSize="13sp"
+            android:typeface="monospace" />
+    </ScrollView>
+
+    <Button
+        android:id="@+id/diagRefresh"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_button_primary"
+        android:minHeight="48dp"
+        android:text="تحديث التشخيص"
+        android:textColor="@color/paper" />
+
+    <Button
+        android:id="@+id/diagCopy"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/bg_button_secondary"
+        android:minHeight="48dp"
+        android:text="نسخ تقرير التشخيص"
+        android:textColor="@color/ink" />
+
+    <Button
+        android:id="@+id/diagBack"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/bg_button_secondary"
+        android:minHeight="48dp"
+        android:text="رجوع"
+        android:textColor="@color/teal" />
+</LinearLayout>

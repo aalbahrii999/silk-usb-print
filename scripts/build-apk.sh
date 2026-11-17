@@ -24,8 +24,8 @@ fi
   --java "$BUILD/gen" \
   --min-sdk-version 24 \
   --target-sdk-version 34 \
-  --version-code 1 \
-  --version-name 1.0.0 \
+  --version-code 2 \
+  --version-name 1.1.0 \
   "$BUILD/compiled.zip"
 javac --release 8 -classpath "$JAR" -d "$BUILD/classes" \
   $(find "$ROOT/src" "$BUILD/gen" -name '*.java')

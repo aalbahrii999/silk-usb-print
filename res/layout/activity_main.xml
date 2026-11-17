@@ -247,6 +247,26 @@
             android:textColor="@color/paper"
             android:textSize="18sp" />
 
+        <Button
+            android:id="@+id/directTest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_button_secondary"
+            android:minHeight="48dp"
+            android:text="اختبار الطباعة المباشرة"
+            android:textColor="@color/ink" />
+
+        <Button
+            android:id="@+id/openDiag"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_button_secondary"
+            android:minHeight="48dp"
+            android:text="تشخيص USB"
+            android:textColor="@color/teal" />
+
         <TextView
             android:id="@+id/logText"
             android:layout_width="match_parent"

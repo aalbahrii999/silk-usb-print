@@ -5,6 +5,7 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.util.Log;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.database.Cursor;
@@ -74,7 +75,8 @@ public class MainActivity extends Activity {
             UsbDevice device = readDevice(intent);
             boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
             if (granted && device != null) {
-                log("تم منح الإذن. يمكنك الطباعة الآن.");
+                log("USB_PERMISSION_GRANTED");
+                notePrinterLanguage(device);
             } else {
                 log("رُفض إذن USB. لن يُرسل شيء إلى الطابعة.");
             }
@@ -108,8 +110,8 @@ public class MainActivity extends Activity {
 
         ArrayAdapter<String> langs = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
                 new String[]{
-                        "PDF مباشر — ألوان، طابعات المكتب",
-                        "PCL رمادي — ليزر",
+                        "PDF مباشر — ليس لـ P2035",
+                        "PCL 5e — HP LaserJet ومنها P2035",
                         "حرارية ٨٠ ملم",
                         "حرارية ٥٨ ملم",
                         "نافذة أندرويد"
@@ -118,7 +120,12 @@ public class MainActivity extends Activity {
         langSpinner.setAdapter(langs);
 
         paperSpinner.setSelection(prefs.getInt("paper", 0));
-        langSpinner.setSelection(prefs.getInt("lang", 0));
+        int lang = prefs.getInt("lang", PrintComposer.MODE_PCL);
+        if (!prefs.getBoolean("v11_pcl", false)) {
+            lang = PrintComposer.MODE_PCL;
+            prefs.edit().putBoolean("v11_pcl", true).putInt("lang", lang).apply();
+        }
+        langSpinner.setSelection(lang);
         sharpCheck.setChecked(prefs.getBoolean("sharp", false));
         copies = prefs.getInt("copies", 1);
         if (copies < 1) copies = 1;
@@ -179,6 +186,18 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) {
                 startPrint();
+            }
+        });
+        findViewById(R.id.directTest).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startDirectTest();
+            }
+        });
+        findViewById(R.id.openDiag).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, DiagActivity.class));
             }
         });
         AdapterView.OnItemSelectedListener save = new AdapterView.OnItemSelectedListener() {
@@ -555,40 +574,34 @@ public class MainActivity extends Activity {
     }
 
     private void startPrint() {
+        log("PRINT_BUTTON_CLICKED");
         if (printing) return;
         if (selectedBytes == null) {
-            log("اختر صورة أو مستنداً، أو اطبع الصفحة التجريبية.");
+            log("توقف: لا يوجد ملف. اختر صورة أو مستنداً، أو اضغط اختبار الطباعة المباشرة.");
             return;
         }
         savePrefs();
         final int mode = langSpinner.getSelectedItemPosition();
         final UsbDevice device = currentDevice();
-        if (mode != PrintComposer.MODE_SYSTEM) {
-            if (device == null) {
-                log("صل الطابعة بكابل USB ثم اضغط اتصال.");
-                return;
-            }
-            if (usbManager == null || !usbManager.hasPermission(device)) {
-                log("امنح إذن USB من زر الاتصال.");
-                requestPermission(device);
-                return;
-            }
+        if (mode == PrintComposer.MODE_PDF && device != null
+                && UsbPrintTransport.wantsPcl(DiagStore.last == null ? "" : DiagStore.last.deviceId, label(device))) {
+            langSpinner.setSelection(PrintComposer.MODE_PCL);
+            log("توقف: هذه الطابعة لا تطبع PDF. تم اختيار PCL 5e. ابدأ باختبار الطباعة المباشرة.");
+            return;
         }
-        printing = true;
-        printButton.setEnabled(false);
-        printButton.setText(getString(R.string.printing));
-        log(mode == PrintComposer.MODE_PDF || mode == PrintComposer.MODE_SYSTEM
-                ? "جارٍ تجهيز الملف مع الألوان…"
-                : "جارٍ تحويل الصفحة إلى نقاط الطابعة…");
+        if (mode != PrintComposer.MODE_SYSTEM && !readyUsb(device)) return;
         final byte[] bytes = selectedBytes;
         final String mime = selectedMime;
         final int paper = paperSpinner.getSelectedItemPosition();
         final int copyCount = copies;
         final boolean sharp = sharpCheck.isChecked();
+        beginSend();
         new Thread(new Runnable() {
             @Override
             public void run() {
+                UsbPrintTransport.Report report = new UsbPrintTransport.Report();
                 try {
+                    if (device != null) report.mark("USB_DEVICE_FOUND");
                     PrintComposer.Request req = new PrintComposer.Request();
                     req.context = getApplicationContext();
                     req.bytes = bytes;
@@ -598,54 +611,150 @@ public class MainActivity extends Activity {
                     req.copies = copyCount;
                     req.sharp = sharp;
                     final byte[] job = PrintComposer.compose(req);
+                    report.mark("PRINT_JOB_CREATED");
+                    report.jobBytes = job.length;
+                    if (mode == PrintComposer.MODE_PCL) report.mark("PCL_DATA_READY");
+                    else report.mark("JOB_DATA_READY");
+                    ui(new Runnable() {
+                        @Override
+                        public void run() {
+                            log("PRINT_JOB_CREATED " + job.length + " بايت");
+                        }
+                    });
                     if (mode == PrintComposer.MODE_SYSTEM) {
                         ui(new Runnable() {
                             @Override
                             public void run() {
-                                printing = false;
-                                printButton.setEnabled(true);
-                                printButton.setText(getString(R.string.print_now));
+                                endSend();
                                 SystemPrintHelper.print(MainActivity.this, "سلك", job);
                                 log("فُتحت نافذة الطباعة في أندرويد. اختر الطابعة من هناك.");
                             }
                         });
                         return;
                     }
-                    UsbPrintTransport.write(usbManager, device, job, new UsbPrintTransport.Progress() {
-                        @Override
-                        public void onProgress(final int sent, final int total) {
-                            ui(new Runnable() {
-                                @Override
-                                public void run() {
-                                    int pct = total == 0 ? 0 : (sent * 100 / total);
-                                    statusText.setText("جارٍ الإرسال… " + pct + "%");
-                                }
-                            });
-                        }
-                    });
-                    ui(new Runnable() {
-                        @Override
-                        public void run() {
-                            printing = false;
-                            printButton.setEnabled(true);
-                            printButton.setText(getString(R.string.print_now));
-                            log("تم إرسال " + (job.length / 1024) + " ك.ب إلى الطابعة.");
-                            updateConnectionLabel();
-                        }
-                    });
+                    sendUsb(device, job, report);
                 } catch (Throwable t) {
-                    final String msg = t.getMessage() == null ? "تعذّرت الطباعة." : t.getMessage();
+                    failSend(report, t);
+                }
+            }
+        }).start();
+    }
+
+    private void startDirectTest() {
+        log("PRINT_BUTTON_CLICKED");
+        if (printing) return;
+        final UsbDevice device = currentDevice();
+        if (!readyUsb(device)) return;
+        beginSend();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                UsbPrintTransport.Report report = new UsbPrintTransport.Report();
+                try {
+                    report.mark("USB_DEVICE_FOUND");
+                    final byte[] job = PrintComposer.pcl5eAsciiTest();
+                    report.mark("PRINT_JOB_CREATED");
+                    report.mark("PCL_DATA_READY");
+                    report.jobBytes = job.length;
                     ui(new Runnable() {
                         @Override
                         public void run() {
-                            printing = false;
-                            printButton.setEnabled(true);
-                            printButton.setText(getString(R.string.print_now));
-                            log(msg);
-                            updateConnectionLabel();
+                            log("PCL_DATA_READY " + job.length + " بايت — نص ASCII فقط");
                         }
                     });
+                    sendUsb(device, job, report);
+                } catch (Throwable t) {
+                    failSend(report, t);
                 }
+            }
+        }).start();
+    }
+
+    private boolean readyUsb(UsbDevice device) {
+        if (device == null) {
+            log("توقف: لا توجد طابعة. وصل الكابل ثم اضغط تحديث.");
+            return false;
+        }
+        log("USB_DEVICE_FOUND");
+        if (usbManager == null || !usbManager.hasPermission(device)) {
+            log("توقف: إذن USB غير ممنوح.");
+            requestPermission(device);
+            return false;
+        }
+        log("USB_PERMISSION_GRANTED");
+        return true;
+    }
+
+    private void beginSend() {
+        printing = true;
+        printButton.setEnabled(false);
+        findViewById(R.id.directTest).setEnabled(false);
+        printButton.setText(getString(R.string.printing));
+    }
+
+    private void endSend() {
+        printing = false;
+        printButton.setEnabled(true);
+        findViewById(R.id.directTest).setEnabled(true);
+        printButton.setText(getString(R.string.print_now));
+        updateConnectionLabel();
+    }
+
+    private void sendUsb(final UsbDevice device, final byte[] job, final UsbPrintTransport.Report report) throws java.io.IOException {
+        UsbPrintTransport.write(usbManager, device, job, new UsbPrintTransport.Progress() {
+            @Override
+            public void onProgress(final int sent, final int total) {
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        statusText.setText("تم إرسال " + sent + " من " + total + " بايت");
+                    }
+                });
+            }
+        }, report);
+        ui(new Runnable() {
+            @Override
+            public void run() {
+                endSend();
+                log("USB_TRANSFER_RESULT " + report.sentBytes + " من " + job.length
+                        + " بايت خلال " + report.durationMs + " ms");
+                log("النقل اكتمل. هذا لا يؤكد خروج الورقة. إذا لم تتحرك الطابعة افتح تشخيص USB وانسخ التقرير.");
+                statusText.setText("تم إرسال " + report.sentBytes + " من " + job.length + " بايت");
+            }
+        });
+    }
+
+    private void failSend(final UsbPrintTransport.Report report, final Throwable t) {
+        final String msg = t.getMessage() == null ? "تعذّر الإرسال." : t.getMessage();
+        if (report.error == null || report.error.length() == 0) report.error = msg;
+        DiagStore.last = report;
+        DiagStore.text = report.text();
+        Log.e("Silk", msg, t);
+        ui(new Runnable() {
+            @Override
+            public void run() {
+                endSend();
+                log("فشل عند " + report.stage);
+                log(msg);
+            }
+        });
+    }
+
+    private void notePrinterLanguage(final UsbDevice device) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final UsbPrintTransport.Report report = UsbPrintTransport.probe(usbManager, device);
+                DiagStore.last = report;
+                DiagStore.text = report.text();
+                if (!UsbPrintTransport.wantsPcl(report.deviceId, label(device))) return;
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        langSpinner.setSelection(PrintComposer.MODE_PCL);
+                        log("الطابعة تفهم PCL 5e ولا تقبل PDF. اضغط «اختبار الطباعة المباشرة».");
+                    }
+                });
             }
         }).start();
     }
@@ -661,7 +770,11 @@ public class MainActivity extends Activity {
     }
 
     private void log(String message) {
-        logText.setText(message);
+        Log.i("Silk", message);
+        CharSequence prev = logText.getText();
+        String next = prev == null || prev.length() == 0 ? message : prev + "\n" + message;
+        if (next.length() > 3500) next = next.substring(next.length() - 3500);
+        logText.setText(next);
     }
 
     private void ui(Runnable runnable) {
