@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">سلك</string>
+    <string name="tagline">اطبع الصور والمستندات من الجوال مباشرة عبر كابل USB. بدون شبكة.</string>
+    <string name="printer_heading">الطابعة</string>
+    <string name="refresh">تحديث</string>
+    <string name="connect">اتصال</string>
+    <string name="connected">متصلة</string>
+    <string name="pick_image">صورة</string>
+    <string name="pick_doc">مستند</string>
+    <string name="test_page">صفحة تجريبية</string>
+    <string name="settings">الإعدادات</string>
+    <string name="paper_label">الورق</string>
+    <string name="lang_label">طريقة الطباعة</string>
+    <string name="sharp">نص حاد — أنسب للمستندات على PCL والحرارية</string>
+    <string name="copies">النسخ</string>
+    <string name="print_now">اطبع الآن</string>
+    <string name="printing">جارٍ الطباعة…</string>
+    <string name="empty_preview">لم يُختر ملف بعد</string>
+    <string name="help">الكابل: USB-C إلى منفذ الطابعة، واستخدم محول OTG إن لم يدخل الكابل مباشرة.\n«PDF مباشر» يُبقي الألوان على HP وBrother وكثير من طابعات المكاتب.\n«PCL رمادي» لليزر الأقدم. «حرارية» لإيصالات ٨٠ أو ٥٨ ملم.\nطابعات إبسون وكانون المنزلية غالباً تحتاج «نافذة أندرويد» مع إضافة الشركة المصنّعة.\nالملف لا يغادر الجوال: لا إنترنت، والإرسال يتم عبر الكابل فقط.</string>
+    <string name="footer">سلك ١٫٠ — طباعة محلية عبر USB</string>
+</resources>
